@@ -1,355 +1,248 @@
-import os
+# mega_football_bot_full_mega.py
 import asyncio
 import random
-import json
-
+import sqlite3
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
 
-TOKEN = os.getenv("BOT_TOKEN")
+API_TOKEN = "ВАШ_ТОКЕН_ЗДЕСЬ"
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
 
-DB = "players.json"
+# ==============================
+# DATABASE
+# ==============================
+conn = sqlite3.connect("mega_football_bot_full_mega.db")
+cursor = conn.cursor()
 
-
-# ===== Загрузка базы =====
-
-def load():
-    try:
-        with open(DB,"r") as f:
-            return json.load(f)
-    except:
-        return {}
-
-def save():
-    with open(DB,"w") as f:
-        json.dump(players,f)
-
-players = load()
-
-
-# ===== Регистрация =====
-
-def register(user):
-
-    uid = str(user.id)
-
-    if uid not in players:
-
-        players[uid] = {
-            "name": user.first_name,
-            "coins": 200,
-            "wins": 0,
-            "power": 1,
-            "inventory": [],
-            "last_daily":0
-        }
-
-        save()
-
-
-# ===== Меню =====
-
-menu = ReplyKeyboardMarkup(
-keyboard=[
-[KeyboardButton(text="⚽ Матч"),KeyboardButton(text="🎯 Пенальти")],
-[KeyboardButton(text="🤖 ИИ матч"),KeyboardButton(text="👥 PvP")],
-[KeyboardButton(text="📦 Сундук"),KeyboardButton(text="🎁 Награда")],
-[KeyboardButton(text="👤 Профиль"),KeyboardButton(text="🎒 Инвентарь")],
-[KeyboardButton(text="🏆 Рейтинг"),KeyboardButton(text="🛒 Магазин")]
-],
-resize_keyboard=True
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS players(
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    coins INTEGER DEFAULT 100,
+    level INTEGER DEFAULT 1,
+    exp INTEGER DEFAULT 0,
+    attack INTEGER DEFAULT 10,
+    defense INTEGER DEFAULT 10,
+    matches_played INTEGER DEFAULT 0,
+    wins INTEGER DEFAULT 0,
+    achievements TEXT DEFAULT '',
+    last_daily TEXT DEFAULT ''
 )
+''')
+conn.commit()
 
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS pvp_queue(
+    user_id INTEGER PRIMARY KEY,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+''')
+conn.commit()
 
-# ===== Предметы =====
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS tournaments(
+    tournament_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    status TEXT DEFAULT 'waiting'
+)
+''')
+conn.commit()
 
-items = {
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS leaderboard(
+    user_id INTEGER PRIMARY KEY,
+    wins INTEGER DEFAULT 0,
+    level INTEGER DEFAULT 1
+)
+''')
+conn.commit()
 
-"мяч":{"price":50,"power":1,"rarity":"обычный"},
-"бутсы":{"price":120,"power":2,"rarity":"обычный"},
-"перчатки":{"price":200,"power":3,"rarity":"редкий"},
-"золотой мяч":{"price":500,"power":5,"rarity":"легендарный"}
+# ==============================
+# UTILS
+# ==============================
+def get_player(user_id, username=None):
+    cursor.execute("SELECT * FROM players WHERE user_id=?", (user_id,))
+    player = cursor.fetchone()
+    if player:
+        return player
+    else:
+        cursor.execute("INSERT INTO players(user_id, username) VALUES (?,?)", (user_id, username))
+        conn.commit()
+        return get_player(user_id, username)
 
-}
+def update_player(user_id, **kwargs):
+    fields = ", ".join(f"{k}=?" for k in kwargs)
+    values = list(kwargs.values())
+    values.append(user_id)
+    cursor.execute(f"UPDATE players SET {fields} WHERE user_id=?", values)
+    conn.commit()
 
+def add_exp(user_id, amount):
+    player = get_player(user_id)
+    new_exp = player[4] + amount
+    new_level = player[3]
+    level_up = False
+    while new_exp >= new_level * 50:
+        new_exp -= new_level * 50
+        new_level += 1
+        level_up = True
+    update_player(user_id, exp=new_exp, level=new_level)
+    return level_up, new_level
 
-# ===== START =====
+def can_claim_daily(user_id):
+    player = get_player(user_id)
+    last_daily = player[10]
+    if last_daily:
+        last_time = datetime.strptime(last_daily, "%Y-%m-%d")
+        if datetime.now() - last_time < timedelta(days=1):
+            return False
+    return True
 
-@dp.message(Command("start"))
+def claim_daily(user_id):
+    update_player(user_id, coins=get_player(user_id)[2]+50, last_daily=datetime.now().strftime("%Y-%m-%d"))
+
+# ==============================
+# KEYBOARDS
+# ==============================
+def main_menu():
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("⚽ Играть PvE", callback_data="match_pve"))
+    kb.add(InlineKeyboardButton("⚔ Играть PvP", callback_data="match_pvp"))
+    kb.add(InlineKeyboardButton("🏪 Магазин", callback_data="store"))
+    kb.add(InlineKeyboardButton("📊 Профиль", callback_data="profile"))
+    kb.add(InlineKeyboardButton("💪 Тренировка", callback_data="train"))
+    kb.add(InlineKeyboardButton("🏆 Турниры", callback_data="tournament"))
+    kb.add(InlineKeyboardButton("🎁 Ежедневный бонус", callback_data="daily"))
+    return kb
+
+def store_menu():
+    kb = InlineKeyboardMarkup()
+    kb.add(InlineKeyboardButton("Атака +5 (50 монет)", callback_data="buy_attack"))
+    kb.add(InlineKeyboardButton("Защита +5 (50 монет)", callback_data="buy_defense"))
+    kb.add(InlineKeyboardButton("Супер-удар (100 монет)", callback_data="buy_boost"))
+    kb.add(InlineKeyboardButton("Скин (100 монет)", callback_data="buy_skin"))
+    kb.add(InlineKeyboardButton("Назад", callback_data="back"))
+    return kb
+
+# ==============================
+# COMMANDS
+# ==============================
+@dp.message_handler(commands=["start"])
 async def start(message: types.Message):
+    get_player(message.from_user.id, message.from_user.username)
+    await message.answer(f"Привет, {message.from_user.first_name}! Добро пожаловать в **Mega Football Bot Ultra** ⚽🔥", reply_markup=main_menu())
 
-    register(message.from_user)
+# ==============================
+# CALLBACKS
+# ==============================
+@dp.callback_query_handler(lambda c: True)
+async def callbacks(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    username = call.from_user.username
+    player = get_player(user_id, username)
 
-    await message.answer(
-        "⚽ Добро пожаловать в футбольную игру!",
-        reply_markup=menu
-    )
+    # ---------- ПРОФИЛЬ ----------
+    if call.data == "profile":
+        msg = (
+            f"📊 Профиль игрока: {player[1]}\n"
+            f"💰 Монеты: {player[2]}\n"
+            f"🏆 Уровень: {player[3]} (EXP: {player[4]})\n"
+            f"⚔️ Атака: {player[5]}\n"
+            f"🛡 Защита: {player[6]}\n"
+            f"🎮 Матчей сыграно: {player[7]}\n"
+            f"🥇 Побед: {player[8]}\n"
+            f"🏅 Достижения: {player[9] if player[9] else 'Нет'}"
+        )
+        await call.message.edit_text(msg, reply_markup=main_menu())
 
+    # ---------- МАГАЗИН ----------
+    elif call.data == "store":
+        await call.message.edit_text("🏪 Магазин улучшений:", reply_markup=store_menu())
 
-# ===== ПРОФИЛЬ =====
-
-@dp.message(lambda m: m.text == "👤 Профиль")
-async def profile(message: types.Message):
-
-    uid = str(message.from_user.id)
-    register(message.from_user)
-
-    p = players[uid]
-
-    await message.answer(
-f"👤 {p['name']}\n\n"
-f"💰 Монеты: {p['coins']}\n"
-f"🏆 Победы: {p['wins']}\n"
-f"⚡ Сила: {p['power']}"
-)
-
-
-# ===== ИНВЕНТАРЬ =====
-
-@dp.message(lambda m: m.text == "🎒 Инвентарь")
-async def inventory(message: types.Message):
-
-    uid = str(message.from_user.id)
-
-    inv = players[uid]["inventory"]
-
-    if not inv:
-
-        await message.answer("🎒 Инвентарь пуст")
-        return
-
-    text = "🎒 Предметы:\n\n"
-
-    for i in inv:
-
-        text += f"• {i}\n"
-
-    await message.answer(text)
-
-
-# ===== МАГАЗИН =====
-
-@dp.message(lambda m: m.text == "🛒 Магазин")
-async def shop(message: types.Message):
-
-    text = "🛒 Магазин\n\n"
-
-    for name,data in items.items():
-
-        text += f"{name} — {data['price']} монет ({data['rarity']})\n"
-
-    text += "\nНапиши: купить название"
-
-    await message.answer(text)
-
-
-# ===== ПОКУПКА =====
-
-@dp.message(lambda m: m.text and m.text.lower().startswith("купить"))
-async def buy(message: types.Message):
-
-    uid = str(message.from_user.id)
-
-    p = players[uid]
-
-    name = message.text.lower().replace("купить ","")
-
-    if name not in items:
-
-        await message.answer("❌ Предмет не найден")
-        return
-
-    item = items[name]
-
-    if p["coins"] < item["price"]:
-
-        await message.answer("❌ Недостаточно монет")
-        return
-
-    p["coins"] -= item["price"]
-    p["power"] += item["power"]
-    p["inventory"].append(name)
-
-    save()
-
-    await message.answer(f"✅ Куплен предмет {name}")
-
-
-# ===== МАТЧ =====
-
-@dp.message(lambda m: m.text == "⚽ Матч")
-async def match(message: types.Message):
-
-    uid = str(message.from_user.id)
-
-    p = players[uid]
-
-    enemy = random.randint(1,6)
-
-    pg = 0
-    eg = 0
-
-    await message.answer("🏟 Матч начинается!")
-
-    for i in range(5):
-
-        await asyncio.sleep(1)
-
-        event = random.randint(1,3)
-
-        if event == 1:
-
-            await message.answer("⚡ Ты атакуешь")
-
-            if random.randint(1,p["power"]+2) > random.randint(1,enemy+2):
-
-                pg += 1
-                await message.answer("⚽ ГОООЛ")
-
+    elif call.data.startswith("buy_"):
+        if call.data == "buy_attack":
+            if player[2] >= 50:
+                update_player(user_id, coins=player[2]-50, attack=player[5]+5)
+                await call.answer("Атака увеличена!", show_alert=True)
             else:
-
-                await message.answer("🧤 Сейв")
-
-        elif event == 2:
-
-            await message.answer("😈 Соперник атакует")
-
-            if random.randint(1,enemy+2) > random.randint(1,p["power"]+2):
-
-                eg += 1
-                await message.answer("🥅 Гол соперника")
-
+                await call.answer("Недостаточно монет!", show_alert=True)
+        elif call.data == "buy_defense":
+            if player[2] >= 50:
+                update_player(user_id, coins=player[2]-50, defense=player[6]+5)
+                await call.answer("Защита увеличена!", show_alert=True)
             else:
+                await call.answer("Недостаточно монет!", show_alert=True)
+        elif call.data == "buy_boost":
+            if player[2] >= 100:
+                update_player(user_id, coins=player[2]-100, attack=player[5]+10)
+                await call.answer("Супер-удар куплен!", show_alert=True)
+            else:
+                await call.answer("Недостаточно монет!", show_alert=True)
+        elif call.data == "buy_skin":
+            if player[2] >= 100:
+                update_player(user_id, coins=player[2]-100)
+                await call.answer("Скин куплен!", show_alert=True)
+            else:
+                await call.answer("Недостаточно монет!", show_alert=True)
+        await call.message.edit_text("🏪 Магазин улучшений:", reply_markup=store_menu())
 
-                await message.answer("🧤 Ты спас")
+    elif call.data == "back":
+        await call.message.edit_text("Главное меню:", reply_markup=main_menu())
 
+    # ---------- ТРЕНИРОВКА ----------
+    elif call.data == "train":
+        gain_attack = random.randint(1, 5)
+        gain_defense = random.randint(1, 5)
+        gain_coins = random.randint(10, 30)
+        update_player(user_id,
+                      attack=player[5]+gain_attack,
+                      defense=player[6]+gain_defense,
+                      coins=player[2]+gain_coins)
+        level_up, new_level = add_exp(user_id, random.randint(10, 30))
+        msg = f"💪 Тренировка прошла!\n+{gain_attack} Атака\n+{gain_defense} Защита\n+{gain_coins} Монет"
+        if level_up:
+            msg += f"\n🎉 Поздравляем! Вы достигли уровня {new_level}!"
+        await call.answer(msg, show_alert=True)
+        await call.message.edit_text("Главное меню:", reply_markup=main_menu())
+
+    # ---------- ЕЖЕДНЕВНЫЙ БОНУС ----------
+    elif call.data == "daily":
+        if can_claim_daily(user_id):
+            claim_daily(user_id)
+            await call.answer("🎁 Вы получили 50 монет за ежедневный бонус!", show_alert=True)
         else:
+            await call.answer("⏳ Бонус можно получить раз в день!", show_alert=True)
+        await call.message.edit_text("Главное меню:", reply_markup=main_menu())
 
-            await message.answer("⚔ Борьба в центре")
-
-    if pg > eg:
-
-        p["wins"] += 1
-        p["coins"] += 40
-        result = "🏆 Победа"
-
-    elif pg < eg:
-
-        result = "❌ Поражение"
-
-    else:
-
-        result = "🤝 Ничья"
-
-    save()
-
-    await message.answer(
-f"🏁 Конец матча\n\n"
-f"{pg}:{eg}\n\n"
-f"{result}"
-)
-
-
-# ===== ПЕНАЛЬТИ =====
-
-@dp.message(lambda m: m.text == "🎯 Пенальти")
-async def penalty(message: types.Message):
-
-    goals = 0
-
-    for i in range(3):
-
-        await asyncio.sleep(1)
-
-        if random.randint(1,2) == 1:
-
-            goals += 1
-            await message.answer("⚽ Гол")
-
+    # ---------- PvE МАТЧ ----------
+    elif call.data == "match_pve":
+        ai_level = random.randint(max(1, player[3]-1), player[3]+3)
+        ai_attack = random.randint(5, 20) + ai_level
+        ai_defense = random.randint(5, 20) + ai_level
+        player_score = player[5] + random.randint(-5,5)
+        ai_score = ai_attack + random.randint(-5,5)
+        if player_score > ai_score:
+            coins_win = random.randint(20, 50)
+            update_player(user_id, coins=player[2]+coins_win, matches_played=player[7]+1, wins=player[8]+1)
+            level_up, new_level = add_exp(user_id, random.randint(15, 30))
+            msg = f"🎉 Победа PvE!\nВы заработали {coins_win} монет!\nВаш результат: {player_score}\nСоперник ИИ: {ai_score}"
+            if level_up:
+                msg += f"\n🎉 Вы достигли уровня {new_level}!"
+        elif player_score < ai_score:
+            update_player(user_id, matches_played=player[7]+1)
+            msg = f"❌ Поражение PvE!\nВаш результат: {player_score}\nСоперник ИИ: {ai_score}"
         else:
+            update_player(user_id, matches_played=player[7]+1, coins=player[2]+10)
+            msg = f"⚖️ Ничья PvE!\nВы получили 10 монет за участие.\nВаш результат: {player_score}\nСоперник ИИ: {ai_score}"
+        await call.message.edit_text(msg, reply_markup=main_menu())
 
-            await message.answer("🧤 Сейв")
-
-    await message.answer(f"Забито {goals}/3")
-
-
-# ===== СУНДУК =====
-
-@dp.message(lambda m: m.text == "📦 Сундук")
-async def chest(message: types.Message):
-
-    uid = str(message.from_user.id)
-
-    p = players[uid]
-
-    rarity = random.randint(1,100)
-
-    if rarity <= 60:
-
-        coins = random.randint(20,40)
-        p["coins"] += coins
-
-        result = f"💰 {coins} монет"
-
-    elif rarity <= 90:
-
-        item = random.choice(list(items.keys()))
-        p["inventory"].append(item)
-
-        result = f"🎁 Предмет: {item}"
-
-    else:
-
-        p["coins"] += 100
-        result = "⭐ ЛЕГЕНДАРНЫЙ ПРИЗ 100 монет"
-
-    save()
-
-    await message.answer(result)
-
-
-# ===== НАГРАДА =====
-
-@dp.message(lambda m: m.text == "🎁 Награда")
-async def daily(message: types.Message):
-
-    uid = str(message.from_user.id)
-
-    p = players[uid]
-
-    coins = random.randint(20,60)
-
-    p["coins"] += coins
-
-    save()
-
-    await message.answer(f"🎁 Ежедневная награда {coins} монет")
-
-
-# ===== РЕЙТИНГ =====
-
-@dp.message(lambda m: m.text == "🏆 Рейтинг")
-async def rating(message: types.Message):
-
-    top = sorted(players.items(), key=lambda x:x[1]["wins"], reverse=True)
-
-    text = "🏆 Топ игроков\n\n"
-
-    for i,(uid,p) in enumerate(top[:10],1):
-
-        text += f"{i}. {p['name']} — {p['wins']}\n"
-
-    await message.answer(text)
-
-
-# ===== ЗАПУСК =====
-
-async def main():
-    await dp.start_polling(bot)
-
+# ==============================
+# RUN BOT
+# ==============================
 if __name__ == "__main__":
-    asyncio.run(main())
+    print("Mega Football Bot Full Mega запущен!")
+    executor.start_polling(dp, skip_updates=True)
