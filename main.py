@@ -7,10 +7,9 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ====== Токен ======
-
-
-API_TOKEN = os.getenv("API_TOKEN")  # токен берется из Variables
+API_TOKEN = os.getenv("API_TOKEN")
 bot = Bot(token=API_TOKEN)
+dp = Dispatcher()
 # ====== Игроки ======
 players = {}  # user_id: {money, level, stamina, xp, items, skins, rating, last_daily, last_training}
 
