@@ -1,248 +1,323 @@
-# mega_football_bot_full_mega.py
-import asyncio
+# mega_football_bot.py
+import os
 import random
-import sqlite3
+import asyncio
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils import executor
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-API_TOKEN = "ВАШ_ТОКЕН_ЗДЕСЬ"
-
+# ====== Токен через переменную окружения ======
+API_TOKEN = os.getenv("API_TOKEN")
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-# ==============================
-# DATABASE
-# ==============================
-conn = sqlite3.connect("mega_football_bot_full_mega.db")
-cursor = conn.cursor()
+# ====== Игроки ======
+players = {}  # player_id: {"money": int, "level": int, "stamina": int, "xp": int, "items": list, "tournaments": int, "rating": int, "last_daily": datetime}
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS players(
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    coins INTEGER DEFAULT 100,
-    level INTEGER DEFAULT 1,
-    exp INTEGER DEFAULT 0,
-    attack INTEGER DEFAULT 10,
-    defense INTEGER DEFAULT 10,
-    matches_played INTEGER DEFAULT 0,
-    wins INTEGER DEFAULT 0,
-    achievements TEXT DEFAULT '',
-    last_daily TEXT DEFAULT ''
-)
-''')
-conn.commit()
+# ====== Магазин ======
+shop_items = {
+    "Energy Drink": {"price": 50, "effect": "stamina+20", "rarity": "common"},
+    "Golden Boots": {"price": 200, "effect": "level+1", "rarity": "rare"},
+    "Magic Ball": {"price": 150, "effect": "xp+50", "rarity": "rare"},
+    "Shield": {"price": 100, "effect": "stamina+30", "rarity": "common"},
+    "Lucky Charm": {"price": 250, "effect": "xp+100", "rarity": "epic"},
+    "Wizard Gloves": {"price": 500, "effect": "stamina+50", "rarity": "epic"}
+}
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS pvp_queue(
-    user_id INTEGER PRIMARY KEY,
-    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)
-''')
-conn.commit()
+# ====== Сундуки ======
+chests = [
+    {"name": "Малый сундук", "price": 50, "reward_money": (10, 100), "reward_xp": (5, 30), "chance": 0.9},
+    {"name": "Средний сундук", "price": 200, "reward_money": (100, 300), "reward_xp": (20, 80), "chance": 0.7},
+    {"name": "Большой сундук", "price": 500, "reward_money": (300, 1000), "reward_xp": (80, 200), "chance": 0.5},
+    {"name": "Легендарный сундук", "price": 1000, "reward_money": (500, 5000), "reward_xp": (200, 500), "chance": 0.3}
+]
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS tournaments(
-    tournament_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT,
-    status TEXT DEFAULT 'waiting'
-)
-''')
-conn.commit()
+# ====== Турниры ======
+tournaments = [
+    {"name": "Local League", "level_req": 1, "reward_money": 100, "reward_xp": 50},
+    {"name": "National Cup", "level_req": 3, "reward_money": 300, "reward_xp": 120},
+    {"name": "Champions Tournament", "level_req": 5, "reward_money": 1000, "reward_xp": 500}
+]
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS leaderboard(
-    user_id INTEGER PRIMARY KEY,
-    wins INTEGER DEFAULT 0,
-    level INTEGER DEFAULT 1
-)
-''')
-conn.commit()
+# ====== Функции ======
+def get_player(user_id):
+    if user_id not in players:
+        players[user_id] = {
+            "money": 100,
+            "level": 1,
+            "stamina": 100,
+            "xp": 0,
+            "items": [],
+            "tournaments": 0,
+            "rating": 1000,
+            "last_daily": datetime.min
+        }
+    return players[user_id]
 
-# ==============================
-# UTILS
-# ==============================
-def get_player(user_id, username=None):
-    cursor.execute("SELECT * FROM players WHERE user_id=?", (user_id,))
-    player = cursor.fetchone()
-    if player:
-        return player
+def match_outcome(player, opponent):
+    chance = player["level"] * random.randint(1, 6) + player["stamina"] // 10 + random.randint(0,10)
+    opp_chance = opponent["level"] * random.randint(1, 6) + opponent["stamina"] // 10 + random.randint(0,10)
+    # Случайные события
+    event = random.choice(["none","injury","super_goal","bonus_money"])
+    event_msg = ""
+    goal_msg = ""
+    if random.random() < 0.5:
+        goal_msg = "⚽ Гол!"
     else:
-        cursor.execute("INSERT INTO players(user_id, username) VALUES (?,?)", (user_id, username))
-        conn.commit()
-        return get_player(user_id, username)
+        goal_msg = "❌ Промах!"
+    if event == "injury":
+        player["stamina"] -= 20
+        event_msg = "😢 Травма! Stamina -20"
+    elif event == "super_goal":
+        chance += 10
+        event_msg = "⚡ Супер-гол! +10 к шансам"
+    elif event == "bonus_money":
+        bonus = random.randint(10,50)
+        player["money"] += bonus
+        event_msg = f"💰 Бонусная монета! +{bonus} денег"
+    
+    outcome = "win" if chance >= opp_chance else "lose"
+    return outcome, event_msg, goal_msg
 
-def update_player(user_id, **kwargs):
-    fields = ", ".join(f"{k}=?" for k in kwargs)
-    values = list(kwargs.values())
-    values.append(user_id)
-    cursor.execute(f"UPDATE players SET {fields} WHERE user_id=?", values)
-    conn.commit()
+def apply_item_effect(player, effect):
+    if "stamina" in effect:
+        player["stamina"] += int(effect.split("+")[1])
+    if "level" in effect:
+        player["level"] += int(effect.split("+")[1])
+    if "xp" in effect:
+        player["xp"] += int(effect.split("+")[1])
 
-def add_exp(user_id, amount):
-    player = get_player(user_id)
-    new_exp = player[4] + amount
-    new_level = player[3]
-    level_up = False
-    while new_exp >= new_level * 50:
-        new_exp -= new_level * 50
-        new_level += 1
-        level_up = True
-    update_player(user_id, exp=new_exp, level=new_level)
-    return level_up, new_level
-
-def can_claim_daily(user_id):
-    player = get_player(user_id)
-    last_daily = player[10]
-    if last_daily:
-        last_time = datetime.strptime(last_daily, "%Y-%m-%d")
-        if datetime.now() - last_time < timedelta(days=1):
-            return False
-    return True
-
-def claim_daily(user_id):
-    update_player(user_id, coins=get_player(user_id)[2]+50, last_daily=datetime.now().strftime("%Y-%m-%d"))
-
-# ==============================
-# KEYBOARDS
-# ==============================
 def main_menu():
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("⚽ Играть PvE", callback_data="match_pve"))
-    kb.add(InlineKeyboardButton("⚔ Играть PvP", callback_data="match_pvp"))
-    kb.add(InlineKeyboardButton("🏪 Магазин", callback_data="store"))
-    kb.add(InlineKeyboardButton("📊 Профиль", callback_data="profile"))
-    kb.add(InlineKeyboardButton("💪 Тренировка", callback_data="train"))
-    kb.add(InlineKeyboardButton("🏆 Турниры", callback_data="tournament"))
-    kb.add(InlineKeyboardButton("🎁 Ежедневный бонус", callback_data="daily"))
-    return kb
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚽ Играть матч", callback_data="play_match")
+    kb.button(text="🆚 PvP матч", callback_data="pvp_match")
+    kb.button(text="🏪 Магазин", callback_data="shop")
+    kb.button(text="🎁 Сундуки", callback_data="chests")
+    kb.button(text="🏆 Турниры", callback_data="tournaments")
+    kb.button(text="👤 Профиль", callback_data="profile")
+    kb.button(text="📊 Статистика", callback_data="stats")
+    kb.button(text="🎯 Ежедневный бонус", callback_data="daily")
+    return kb.as_markup()
 
-def store_menu():
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("Атака +5 (50 монет)", callback_data="buy_attack"))
-    kb.add(InlineKeyboardButton("Защита +5 (50 монет)", callback_data="buy_defense"))
-    kb.add(InlineKeyboardButton("Супер-удар (100 монет)", callback_data="buy_boost"))
-    kb.add(InlineKeyboardButton("Скин (100 монет)", callback_data="buy_skin"))
-    kb.add(InlineKeyboardButton("Назад", callback_data="back"))
-    return kb
-
-# ==============================
-# COMMANDS
-# ==============================
-@dp.message_handler(commands=["start"])
+# ====== Команды ======
+@dp.message(Command(commands=["start"]))
 async def start(message: types.Message):
-    get_player(message.from_user.id, message.from_user.username)
-    await message.answer(f"Привет, {message.from_user.first_name}! Добро пожаловать в **Mega Football Bot Ultra** ⚽🔥", reply_markup=main_menu())
+    get_player(message.from_user.id)
+    await message.answer("Привет! Добро пожаловать в Mega Football Bot Ultimate! Выбери действие:", reply_markup=main_menu())
 
-# ==============================
-# CALLBACKS
-# ==============================
-@dp.callback_query_handler(lambda c: True)
-async def callbacks(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    username = call.from_user.username
-    player = get_player(user_id, username)
+# ====== Игровой матч против ИИ ======
+@dp.callback_query(lambda c: c.data == "play_match")
+async def play_match(call: types.CallbackQuery):
+    user = get_player(call.from_user.id)
+    opponent = {"level": random.randint(1, 5), "stamina": random.randint(50, 100)}
+    outcome, event_msg, goal_msg = match_outcome(user, opponent)
+    reward = random.randint(50, 150)
+    
+    if outcome == "win":
+        user["money"] += reward
+        user["xp"] += 20
+        user["stamina"] -= 20
+        msg = f"{goal_msg} Ты выиграл матч против ИИ! 💰 +{reward} монет, XP +20, Stamina -20"
+    else:
+        user["xp"] += 10
+        user["stamina"] -= 30
+        msg = f"{goal_msg} Ты проиграл 😢 XP +10, Stamina -30"
+    
+    if event_msg:
+        msg += f"\n{event_msg}"
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(msg, reply_markup=kb.as_markup())
 
-    # ---------- ПРОФИЛЬ ----------
-    if call.data == "profile":
-        msg = (
-            f"📊 Профиль игрока: {player[1]}\n"
-            f"💰 Монеты: {player[2]}\n"
-            f"🏆 Уровень: {player[3]} (EXP: {player[4]})\n"
-            f"⚔️ Атака: {player[5]}\n"
-            f"🛡 Защита: {player[6]}\n"
-            f"🎮 Матчей сыграно: {player[7]}\n"
-            f"🥇 Побед: {player[8]}\n"
-            f"🏅 Достижения: {player[9] if player[9] else 'Нет'}"
-        )
-        await call.message.edit_text(msg, reply_markup=main_menu())
+# ====== PvP матч ======
+@dp.callback_query(lambda c: c.data == "pvp_match")
+async def pvp_match(call: types.CallbackQuery):
+    user = get_player(call.from_user.id)
+    other_ids = [uid for uid in players if uid != call.from_user.id]
+    if not other_ids:
+        await call.message.edit_text("Пока нет других игроков для PvP 😢", reply_markup=main_menu())
+        return
+    opponent_id = random.choice(other_ids)
+    opponent = get_player(opponent_id)
+    
+    outcome, event_msg, goal_msg = match_outcome(user, opponent)
+    reward = random.randint(50, 200)
+    
+    if outcome == "win":
+        user["money"] += reward
+        user["xp"] += 25
+        user["stamina"] -= 25
+        user["rating"] += 15
+        opponent["stamina"] -= 20
+        opponent["rating"] -= 10
+        msg = f"{goal_msg} Ты выиграл PvP матч! 💰 +{reward}, XP +25, Stamina -25, Рейтинг +15"
+    else:
+        user["xp"] += 10
+        user["stamina"] -= 30
+        user["rating"] -= 10
+        msg = f"{goal_msg} Ты проиграл PvP матч 😢 XP +10, Stamina -30, Рейтинг -10"
+    
+    if event_msg:
+        msg += f"\n{event_msg}"
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(msg, reply_markup=kb.as_markup())
 
-    # ---------- МАГАЗИН ----------
-    elif call.data == "store":
-        await call.message.edit_text("🏪 Магазин улучшений:", reply_markup=store_menu())
+# ====== Профиль ======
+@dp.callback_query(lambda c: c.data == "profile")
+async def profile(call: types.CallbackQuery):
+    user = get_player(call.from_user.id)
+    msg = (f"👤 Профиль игрока:\n"
+           f"💰 Деньги: {user['money']}\n"
+           f"⚡ Stamina: {user['stamina']}\n"
+           f"📈 Уровень: {user['level']}\n"
+           f"⭐ XP: {user['xp']}\n"
+           f"🏆 Турниров: {user['tournaments']}\n"
+           f"🏅 Рейтинг: {user['rating']}\n"
+           f"🎒 Предметы: {', '.join(user['items']) if user['items'] else 'Нет'}")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(msg, reply_markup=kb.as_markup())
 
-    elif call.data.startswith("buy_"):
-        if call.data == "buy_attack":
-            if player[2] >= 50:
-                update_player(user_id, coins=player[2]-50, attack=player[5]+5)
-                await call.answer("Атака увеличена!", show_alert=True)
-            else:
-                await call.answer("Недостаточно монет!", show_alert=True)
-        elif call.data == "buy_defense":
-            if player[2] >= 50:
-                update_player(user_id, coins=player[2]-50, defense=player[6]+5)
-                await call.answer("Защита увеличена!", show_alert=True)
-            else:
-                await call.answer("Недостаточно монет!", show_alert=True)
-        elif call.data == "buy_boost":
-            if player[2] >= 100:
-                update_player(user_id, coins=player[2]-100, attack=player[5]+10)
-                await call.answer("Супер-удар куплен!", show_alert=True)
-            else:
-                await call.answer("Недостаточно монет!", show_alert=True)
-        elif call.data == "buy_skin":
-            if player[2] >= 100:
-                update_player(user_id, coins=player[2]-100)
-                await call.answer("Скин куплен!", show_alert=True)
-            else:
-                await call.answer("Недостаточно монет!", show_alert=True)
-        await call.message.edit_text("🏪 Магазин улучшений:", reply_markup=store_menu())
+# ====== Ежедневный бонус ======
+@dp.callback_query(lambda c: c.data == "daily")
+async def daily_bonus(call: types.CallbackQuery):
+    user = get_player(call.from_user.id)
+    now = datetime.now()
+    if now - user["last_daily"] >= timedelta(hours=24):
+        money_bonus = random.randint(50,200)
+        xp_bonus = random.randint(20,100)
+        user["money"] += money_bonus
+        user["xp"] += xp_bonus
+        user["last_daily"] = now
+        msg = f"🎁 Ежедневный бонус! 💰 +{money_bonus}, XP +{xp_bonus}"
+    else:
+        remaining = timedelta(hours=24) - (now - user["last_daily"])
+        msg = f"⏳ Ежедневный бонус уже взят. Осталось: {remaining}"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(msg, reply_markup=kb.as_markup())
 
-    elif call.data == "back":
-        await call.message.edit_text("Главное меню:", reply_markup=main_menu())
+# ====== Сундуки ======
+@dp.callback_query(lambda c: c.data == "chests")
+async def open_chests(call: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    for chest in chests:
+        kb.button(text=f"{chest['name']} - {chest['price']} 💰", callback_data=f"open_{chest['name']}")
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text("Выберите сундук для открытия:", reply_markup=kb.as_markup())
 
-    # ---------- ТРЕНИРОВКА ----------
-    elif call.data == "train":
-        gain_attack = random.randint(1, 5)
-        gain_defense = random.randint(1, 5)
-        gain_coins = random.randint(10, 30)
-        update_player(user_id,
-                      attack=player[5]+gain_attack,
-                      defense=player[6]+gain_defense,
-                      coins=player[2]+gain_coins)
-        level_up, new_level = add_exp(user_id, random.randint(10, 30))
-        msg = f"💪 Тренировка прошла!\n+{gain_attack} Атака\n+{gain_defense} Защита\n+{gain_coins} Монет"
-        if level_up:
-            msg += f"\n🎉 Поздравляем! Вы достигли уровня {new_level}!"
-        await call.answer(msg, show_alert=True)
-        await call.message.edit_text("Главное меню:", reply_markup=main_menu())
-
-    # ---------- ЕЖЕДНЕВНЫЙ БОНУС ----------
-    elif call.data == "daily":
-        if can_claim_daily(user_id):
-            claim_daily(user_id)
-            await call.answer("🎁 Вы получили 50 монет за ежедневный бонус!", show_alert=True)
+@dp.callback_query(lambda c: c.data.startswith("open_"))
+async def open_chest(call: types.CallbackQuery):
+    chest_name = call.data.replace("open_", "")
+    chest = next(c for c in chests if c["name"] == chest_name)
+    user = get_player(call.from_user.id)
+    if user["money"] >= chest["price"]:
+        user["money"] -= chest["price"]
+        if random.random() <= chest["chance"]:
+            money_reward = random.randint(*chest["reward_money"])
+            xp_reward = random.randint(*chest["reward_xp"])
+            user["money"] += money_reward
+            user["xp"] += xp_reward
+            msg = f"🎉 {chest_name} открыт! 💰 +{money_reward}, XP +{xp_reward}"
         else:
-            await call.answer("⏳ Бонус можно получить раз в день!", show_alert=True)
-        await call.message.edit_text("Главное меню:", reply_markup=main_menu())
+            msg = f"❌ {chest_name} пустой... Повезёт в следующий раз!"
+    else:
+        msg = "Недостаточно денег 💸"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в сундуки", callback_data="chests")
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(msg, reply_markup=kb.as_markup())
 
-    # ---------- PvE МАТЧ ----------
-    elif call.data == "match_pve":
-        ai_level = random.randint(max(1, player[3]-1), player[3]+3)
-        ai_attack = random.randint(5, 20) + ai_level
-        ai_defense = random.randint(5, 20) + ai_level
-        player_score = player[5] + random.randint(-5,5)
-        ai_score = ai_attack + random.randint(-5,5)
-        if player_score > ai_score:
-            coins_win = random.randint(20, 50)
-            update_player(user_id, coins=player[2]+coins_win, matches_played=player[7]+1, wins=player[8]+1)
-            level_up, new_level = add_exp(user_id, random.randint(15, 30))
-            msg = f"🎉 Победа PvE!\nВы заработали {coins_win} монет!\nВаш результат: {player_score}\nСоперник ИИ: {ai_score}"
-            if level_up:
-                msg += f"\n🎉 Вы достигли уровня {new_level}!"
-        elif player_score < ai_score:
-            update_player(user_id, matches_played=player[7]+1)
-            msg = f"❌ Поражение PvE!\nВаш результат: {player_score}\nСоперник ИИ: {ai_score}"
-        else:
-            update_player(user_id, matches_played=player[7]+1, coins=player[2]+10)
-            msg = f"⚖️ Ничья PvE!\nВы получили 10 монет за участие.\nВаш результат: {player_score}\nСоперник ИИ: {ai_score}"
-        await call.message.edit_text(msg, reply_markup=main_menu())
+# ====== Магазин ======
+@dp.callback_query(lambda c: c.data == "shop")
+async def shop(call: types.CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    for item_name, info in shop_items.items():
+        kb.button(text=f"{item_name} - {info['price']} 💰 ({info['rarity']})", callback_data=f"buy_{item_name}")
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text("Добро пожаловать в магазин! Выберите предмет:", reply_markup=kb.as_markup())
 
-# ==============================
-# RUN BOT
-# ==============================
+@dp.callback_query(lambda c: c.data.startswith("buy_"))
+async def buy_item(call: types.CallbackQuery):
+    item_name = call.data.replace("buy_", "")
+    user = get_player(call.from_user.id)
+    item = shop_items[item_name]
+    if user["money"] >= item["price"]:
+        user["money"] -= item["price"]
+        user["items"].append(item_name)
+        apply_item_effect(user, item["effect"])
+        msg = f"✅ Вы купили {item_name}"
+    else:
+        msg = "Недостаточно денег 💸"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в магазин", callback_data="shop")
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(msg, reply_markup=kb.as_markup())
+
+# ====== Турниры ======
+@dp.callback_query(lambda c: c.data == "tournaments")
+async def tournaments_menu(call: types.CallbackQuery):
+    user = get_player(call.from_user.id)
+    kb = InlineKeyboardBuilder()
+    for t in tournaments:
+        kb.button(text=f"{t['name']} (Lvl {t['level_req']})", callback_data=f"tournament_{t['name']}")
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text("Выберите турнир:", reply_markup=kb.as_markup())
+
+@dp.callback_query(lambda c: c.data.startswith("tournament_"))
+async def tournament_match(call: types.CallbackQuery):
+    t_name = call.data.replace("tournament_", "")
+    tournament = next(t for t in tournaments if t["name"] == t_name)
+    user = get_player(call.from_user.id)
+    if user["level"] < tournament["level_req"]:
+        await call.message.edit_text("😢 Твой уровень слишком низкий для этого турнира", reply_markup=main_menu())
+        return
+    opponent = {"level": tournament["level_req"] + random.randint(0,2), "stamina": random.randint(50,100)}
+    outcome, event_msg, goal_msg = match_outcome(user, opponent)
+    if outcome == "win":
+        user["money"] += tournament["reward_money"]
+        user["xp"] += tournament["reward_xp"]
+        user["stamina"] -= 30
+        user["tournaments"] += 1
+        user["rating"] += 20
+        msg = f"{goal_msg} Ты выиграл турнир {t_name}! 💰 +{tournament['reward_money']}, XP +{tournament['reward_xp']}, Stamina -30, Рейтинг +20"
+    else:
+        user["xp"] += 15
+        user["stamina"] -= 40
+        user["rating"] -= 10
+        msg = f"{goal_msg} Ты проиграл турнир {t_name} 😢 XP +15, Stamina -40, Рейтинг -10"
+    if event_msg:
+        msg += f"\n{event_msg}"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(msg, reply_markup=kb.as_markup())
+
+# ====== Статистика ======
+@dp.callback_query(lambda c: c.data == "stats")
+async def stats(call: types.CallbackQuery):
+    user = get_player(call.from_user.id)
+    msg = (f"📊 Статистика игрока:\n"
+           f"💰 Деньги: {user['money']}\n"
+           f"⚡ Stamina: {user['stamina']}\n"
+           f"📈 Уровень: {user['level']}\n"
+           f"⭐ XP: {user['xp']}\n"
+           f"🏆 Турниров: {user['tournaments']}\n"
+           f"🏅 Рейтинг: {user['rating']}\n"
+           f"🎒 Предметы: {', '.join(user['items']) if user['items'] else 'Нет'}")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(msg, reply_markup=kb.as_markup())
+
+# ====== Вернуться в меню ======
+@dp.callback_query(lambda c: c.data == "menu")
+async def menu(call: types.CallbackQuery):
+    await call.message.edit_text("Главное меню:", reply_markup=main_menu())
+
+# ====== Запуск бота ======
 if __name__ == "__main__":
-    print("Mega Football Bot Full Mega запущен!")
-    executor.start_polling(dp, skip_updates=True)
+    print("Mega Football Bot Ultimate RPG запущен!")
+    asyncio.run(dp.start_polling(bot))
