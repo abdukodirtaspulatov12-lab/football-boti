@@ -9,7 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # ====== Токен ======
 API_TOKEN = os.getenv("API_TOKEN")  # ставь токен через Render или Replit Variables
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(bot)
 
 # ====== Игроки ======
 players = {}  # user_id: {money, level, stamina, xp, items, skins, rating, last_daily, last_training}
@@ -189,7 +189,37 @@ async def handle_pvp_action(call: types.CallbackQuery):
     await call.message.edit_text(round_msg)
     await asyncio.sleep(1)
     await next_pvp_round(call, user, opponent, round_num+1, user_score, opp_score)
+# ====== Магазин ======
+@dp.callback_query(lambda c: c.data=="shop")
+async def shop_menu(call: types.CallbackQuery):
+    user = get_player(call.from_user.id)
+    kb = InlineKeyboardBuilder()
+    for item_name, item in shop_items.items():
+        kb.button(text=f"{item_name} 💰{item['price']}", callback_data=f"buy_{item_name}")
+    kb.button(text="Назад в меню", callback_data="menu")
+    await call.message.edit_text("🏪 Магазин:\nВыберите предмет для покупки:", reply_markup=kb.as_markup())
 
+# ====== Покупка предмета ======
+@dp.callback_query(lambda c: c.data.startswith("buy_"))
+async def buy_item(call: types.CallbackQuery):
+    user = get_player(call.from_user.id)
+    item_name = call.data[4:]
+    item = shop_items.get(item_name)
+    if not item:
+        await call.message.edit_text("❌ Ошибка покупки", reply_markup=main_menu())
+        return
+    if user["money"] < item["price"]:
+        await call.message.edit_text("❌ Недостаточно денег!", reply_markup=main_menu())
+        return
+    user["money"] -= item["price"]
+    # Применяем эффект предмета
+    if "stamina" in item["effect"]:
+        user["stamina"] += int(item["effect"].split("+")[1])
+    elif "xp" in item["effect"]:
+        user["xp"] += int(item["effect"].split("+")[1])
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Вернуться в меню", callback_data="menu")
+    await call.message.edit_text(f"✅ Вы купили {item_name}!", reply_markup=kb.as_markup())
 # ====== Тренировка каждые 10 минут ======
 @dp.callback_query(lambda c: c.data=="training")
 async def training(call: types.CallbackQuery):
