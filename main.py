@@ -9,7 +9,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # ====== Токен ======
 API_TOKEN = os.getenv("API_TOKEN")  # ставь токен через Render или Replit Variables
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()
 
 # ====== Игроки ======
 players = {}  # user_id: {money, level, stamina, xp, items, skins, rating, last_daily, last_training}
