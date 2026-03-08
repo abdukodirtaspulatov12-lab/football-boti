@@ -157,7 +157,69 @@ async def buy(message: types.Message):
     save()
 
     await message.answer(f"✅ Куплен предмет: {name}")
+# ===== ОБЫЧНЫЙ МАТЧ =====
+@dp.message(lambda m: m.text == "⚽ Матч")
+async def match(message: types.Message):
 
+    uid = str(message.from_user.id)
+
+    if uid not in players:
+        register(message.from_user)
+
+    p = players[uid]
+
+    enemy_power = random.randint(1,5)
+
+    player_goals = 0
+    enemy_goals = 0
+
+    await message.answer("⚽ Матч начинается!")
+
+    await asyncio.sleep(1)
+
+    for i in range(3):
+
+        await message.answer(f"🎯 Удар {i+1}")
+
+        player_shot = random.randint(1, p["power"] + 2)
+        enemy_shot = random.randint(1, enemy_power + 2)
+
+        if player_shot > enemy_shot:
+
+            player_goals += 1
+            await message.answer("⚽ ГООООЛ!!! 🥅🔥")
+
+        else:
+
+            enemy_goals += 1
+            await message.answer("🧤 Вратарь отбил! 😱")
+
+        await asyncio.sleep(1)
+
+    result = ""
+
+    if player_goals > enemy_goals:
+
+        p["wins"] += 1
+        p["coins"] += 30
+        result = "🏆 Победа! +30 монет"
+
+    elif player_goals < enemy_goals:
+
+        result = "❌ Поражение"
+
+    else:
+
+        result = "🤝 Ничья"
+
+    save()
+
+    await message.answer(
+        f"🏁 Матч окончен!\n\n"
+        f"Ты: {player_goals}\n"
+        f"Соперник: {enemy_goals}\n\n"
+        f"{result}"
+    )
 # ===== ИИ МАТЧ =====
 @dp.message(lambda m: m.text == "🤖 ИИ матч")
 async def ai_match(message: types.Message):
