@@ -1,374 +1,321 @@
-import json
-import random
-import time
-import os
-import asyncio
+export default {
+async fetch(request, env) {
 
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import Command
+if (request.method !== "POST") {
+return new Response("Football Bot Running ⚽")
+}
 
-TOKEN = os.getenv("TOKEN")
+const update = await request.json()
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+if (!update.message) {
+return new Response("ok")
+}
 
-DATA_FILE = "players.json"
+const chat_id = update.message.chat.id
+const user_id = update.message.from.id.toString()
+const text = update.message.text
 
-# загрузка данных
-def load_data():
-    try:
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return {}
+let player = await getPlayer(env,user_id)
 
-# сохранение
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+let answer = ""
 
-players = load_data()
+if (text === "/start") {
 
-# создание игрока
-def get_player(uid):
+answer =
+`⚽ Футбольная игра
 
-    uid = str(uid)
+Команды:
+/profile
+/match
+/train
+/chest
+/tournament
+/buy
+/team
+/stadium
+/daily
+/top`
 
-    if uid not in players:
-        players[uid] = {
-            "coins": 200,
-            "last_train": 0,
-            "last_daily": 0,
-            "stadium": 1,
-            "team": {
-                "striker": 1,
-                "midfielder": 1,
-                "defender": 1,
-                "goalkeeper": 1
-            }
-        }
+}
 
-    return players[uid]
+else if (text === "/profile") {
 
-# сила команды
-def calculate_power(player):
+const power = calculatePower(player)
 
-    team = player["team"]
+answer =
+`👤 Профиль
 
-    power = (
-        team["striker"] * 2 +
-        team["midfielder"] * 2 +
-        team["defender"] * 2 +
-        team["goalkeeper"] * 2 +
-        player["stadium"]
-    )
+💰 Монеты: ${player.coins}
+⚡ Сила: ${power}
+🏟 Стадион: ${player.stadium}`
 
-    return power
+}
+
+else if (text === "/match") {
+
+const power = calculatePower(player)
+
+const winChance = 40 + power * 4
+const r = Math.floor(Math.random()*100)
+
+if (r <= winChance) {
+
+const reward = random(40,100)
+
+player.coins += reward
+
+answer = `🏆 Победа!\n+${reward} монет`
+
+} else {
+
+answer = "❌ Поражение"
+
+}
+
+}
+
+else if (text === "/train") {
+
+const now = Date.now()
+
+if (now - player.last_train < 600000) {
+
+answer = "⏳ Тренировка через 10 минут"
+
+} else {
+
+if (player.coins < 30) {
+
+answer = "❌ Нужно 30 монет"
+
+} else {
+
+player.coins -= 30
+
+const pos = randomPosition()
+
+player.team[pos]++
+
+player.last_train = now
+
+answer = `🏋️ Тренировка\nИгрок улучшил: ${pos}`
+
+}
+
+}
+
+}
+
+else if (text === "/chest") {
+
+const r = Math.random()
+
+let reward
+
+if (r < 0.6) {
+
+reward = random(20,50)
+answer = `📦 Обычный сундук\n+${reward} монет`
+
+}
+else if (r < 0.9) {
+
+reward = random(50,120)
+answer = `💎 Редкий сундук\n+${reward} монет`
+
+}
+else {
+
+reward = random(120,250)
+answer = `👑 Легендарный сундук\n+${reward} монет`
+
+}
+
+player.coins += reward
+
+}
+
+else if (text === "/tournament") {
+
+if (player.coins < 80) {
+
+answer = "❌ Нужно 80 монет"
+
+} else {
+
+player.coins -= 80
+
+const wins = random(0,3)
+
+const reward = wins * 100
+
+player.coins += reward
+
+answer =
+`🏆 Турнир
+
+Побед: ${wins}
+Награда: ${reward}`
+
+}
+
+}
+
+else if (text === "/buy") {
+
+if (player.coins < 120) {
+
+answer = "❌ Нужно 120 монет"
+
+} else {
+
+player.coins -= 120
+
+const pos = randomPosition()
+
+player.team[pos]++
+
+answer = `⚽ Новый игрок: ${pos}`
+
+}
+
+}
+
+else if (text === "/team") {
+
+answer =
+`👥 Команда
+
+⚽ Нападающие: ${player.team.striker}
+🎯 Полузащитники: ${player.team.midfielder}
+🛡 Защитники: ${player.team.defender}
+🧤 Вратари: ${player.team.goalkeeper}`
+
+}
+
+else if (text === "/stadium") {
+
+const cost = player.stadium * 200
+
+if (player.coins < cost) {
+
+answer = `❌ Нужно ${cost} монет`
+
+} else {
+
+player.coins -= cost
+
+player.stadium++
+
+answer = `🏟 Стадион уровень ${player.stadium}`
+
+}
+
+}
+
+else if (text === "/daily") {
+
+const now = Date.now()
+
+if (now - player.last_daily < 86400000) {
+
+answer = "⏳ Бонус уже получен"
+
+} else {
+
+const reward = random(100,200)
+
+player.coins += reward
+player.last_daily = now
+
+answer = `🎁 Бонус +${reward} монет`
+
+}
+
+}
+
+else if (text === "/top") {
+
+answer = "🏆 Топ игроков пока недоступен"
+
+}
+
+await env.PLAYERS.put(user_id,JSON.stringify(player))
+
+await send(chat_id,answer,env)
+
+return new Response("ok")
+
+}
+}
 
 
-# клавиатура
-menu = ReplyKeyboardMarkup(
-keyboard=[
-[KeyboardButton(text="👤 Профиль"),KeyboardButton(text="⚽ Матч")],
-[KeyboardButton(text="🏋️ Тренировка"),KeyboardButton(text="🎁 Сундук")],
-[KeyboardButton(text="🏆 Турнир"),KeyboardButton(text="🎁 Бонус")],
-[KeyboardButton(text="🧑 Купить игрока"),KeyboardButton(text="🎒 Инвентарь")],
-[KeyboardButton(text="🏟 Улучшить стадион"),KeyboardButton(text="📊 Топ")]
-],
-resize_keyboard=True
+async function getPlayer(env,id){
+
+let p = await env.PLAYERS.get(id)
+
+if(!p){
+
+return {
+coins:200,
+stadium:1,
+last_train:0,
+last_daily:0,
+team:{
+striker:1,
+midfielder:1,
+defender:1,
+goalkeeper:1
+}
+}
+
+}
+
+return JSON.parse(p)
+
+}
+
+
+function calculatePower(player){
+
+return (
+player.team.striker*2 +
+player.team.midfielder*2 +
+player.team.defender*2 +
+player.team.goalkeeper*2 +
+player.stadium
 )
 
-# старт
-@dp.message(Command("start"))
-async def start(message: types.Message):
+}
 
-    get_player(message.from_user.id)
-    save_data(players)
 
-    await message.answer(
-        "⚽ Добро пожаловать в футбольную игру!",
-        reply_markup=menu
-    )
+function random(min,max){
 
+return Math.floor(Math.random()*(max-min+1))+min
 
-# профиль
-@dp.message(lambda m: m.text == "👤 Профиль")
-async def profile(message: types.Message):
+}
 
-    player = get_player(message.from_user.id)
-    power = calculate_power(player)
+function randomPosition(){
 
-    await message.answer(
-        f"👤 Профиль\n\n"
-        f"💰 Монеты: {player['coins']}\n"
-        f"⚡ Сила команды: {power}\n"
-        f"🏟 Стадион: {player['stadium']}"
-    )
+const p = ["striker","midfielder","defender","goalkeeper"]
 
+return p[Math.floor(Math.random()*p.length)]
 
-# матч
-@dp.message(lambda m: m.text == "⚽ Матч")
-async def match(message: types.Message):
+}
 
-    player = get_player(message.from_user.id)
 
-    power = calculate_power(player)
+async function send(chat,text,env){
 
-    win_chance = 40 + power * 4
-    result = random.randint(1,100)
+await fetch(
+`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`,
+{
+method:"POST",
+headers:{ "Content-Type":"application/json" },
+body:JSON.stringify({
+chat_id:chat,
+text:text
+})
+}
+)
 
-    if result <= win_chance:
-
-        reward = random.randint(40,100)
-        player["coins"] += reward
-
-        text = f"🏆 Победа!\n+{reward} монет"
-
-    else:
-
-        text = "❌ Вы проиграли матч"
-
-    save_data(players)
-
-    await message.answer(text)
-
-
-# тренировка
-@dp.message(lambda m: m.text == "🏋️ Тренировка")
-async def train(message: types.Message):
-
-    player = get_player(message.from_user.id)
-
-    cooldown = 600
-    now = time.time()
-
-    if now - player["last_train"] < cooldown:
-
-        remain = int(cooldown - (now - player["last_train"]))
-
-        minutes = remain // 60
-        seconds = remain % 60
-
-        await message.answer(
-            f"⏳ Следующая тренировка через {minutes}м {seconds}с"
-        )
-        return
-
-    cost = 30
-
-    if player["coins"] < cost:
-
-        await message.answer("❌ Нужно 30 монет")
-        return
-
-    player["coins"] -= cost
-
-    position = random.choice(["striker","midfielder","defender","goalkeeper"])
-
-    player["team"][position] += 1
-
-    player["last_train"] = now
-
-    save_data(players)
-
-    await message.answer(
-        f"🏋️ Тренировка успешна!\n"
-        f"Игрок улучшил позицию: {position}"
-    )
-
-
-# сундук
-@dp.message(lambda m: m.text == "🎁 Сундук")
-async def chest(message: types.Message):
-
-    player = get_player(message.from_user.id)
-
-    chest = random.choice(["common","rare","legend"])
-
-    if chest == "common":
-
-        reward = random.randint(20,50)
-        name = "📦 Обычный сундук"
-
-    elif chest == "rare":
-
-        reward = random.randint(50,120)
-        name = "💎 Редкий сундук"
-
-    else:
-
-        reward = random.randint(120,250)
-        name = "👑 Легендарный сундук"
-
-    player["coins"] += reward
-
-    save_data(players)
-
-    await message.answer(
-        f"{name}\nВы получили {reward} монет!"
-    )
-
-
-# турнир
-@dp.message(lambda m: m.text == "🏆 Турнир")
-async def tournament(message: types.Message):
-
-    player = get_player(message.from_user.id)
-
-    cost = 80
-
-    if player["coins"] < cost:
-
-        await message.answer("❌ Нужно 80 монет")
-        return
-
-    player["coins"] -= cost
-
-    wins = random.randint(0,3)
-
-    reward = wins * 100
-
-    player["coins"] += reward
-
-    save_data(players)
-
-    await message.answer(
-        f"🏆 Турнир завершен\n"
-        f"Побед: {wins}\n"
-        f"Награда: {reward}"
-    )
-
-
-# ежедневный бонус
-@dp.message(lambda m: m.text == "🎁 Бонус")
-async def daily(message: types.Message):
-
-    player = get_player(message.from_user.id)
-
-    now = time.time()
-
-    if now - player["last_daily"] < 86400:
-
-        remain = int(86400 - (now - player["last_daily"]))
-
-        hours = remain // 3600
-
-        await message.answer(
-            f"⏳ Бонус через {hours} часов"
-        )
-        return
-
-    reward = random.randint(100,200)
-
-    player["coins"] += reward
-    player["last_daily"] = now
-
-    save_data(players)
-
-    await message.answer(
-        f"🎁 Вы получили {reward} монет!"
-    )
-
-
-# покупка игрока
-@dp.message(lambda m: m.text == "🧑 Купить игрока")
-async def buy_player(message: types.Message):
-
-    player = get_player(message.from_user.id)
-
-    cost = 120
-
-    if player["coins"] < cost:
-
-        await message.answer("❌ Нужно 120 монет")
-        return
-
-    position = random.choice(["striker","midfielder","defender","goalkeeper"])
-
-    player["coins"] -= cost
-
-    player["team"][position] += 1
-
-    save_data(players)
-
-    await message.answer(
-        f"⚽ Новый игрок!\n"
-        f"Позиция: {position}"
-    )
-
-
-# инвентарь
-@dp.message(lambda m: m.text == "🎒 Инвентарь")
-async def inventory(message: types.Message):
-
-    player = get_player(message.from_user.id)
-
-    team = player["team"]
-
-    await message.answer(
-        f"👥 Команда\n\n"
-        f"⚽ Нападающие: {team['striker']}\n"
-        f"🎯 Полузащитники: {team['midfielder']}\n"
-        f"🛡 Защитники: {team['defender']}\n"
-        f"🧤 Вратари: {team['goalkeeper']}\n\n"
-        f"🏟 Стадион: {player['stadium']}"
-    )
-
-
-# стадион
-@dp.message(lambda m: m.text == "🏟 Улучшить стадион")
-async def stadium(message: types.Message):
-
-    player = get_player(message.from_user.id)
-
-    cost = player["stadium"] * 200
-
-    if player["coins"] < cost:
-
-        await message.answer(
-            f"❌ Нужно {cost} монет"
-        )
-        return
-
-    player["coins"] -= cost
-    player["stadium"] += 1
-
-    save_data(players)
-
-    await message.answer(
-        f"🏟 Стадион улучшен!\n"
-        f"Уровень: {player['stadium']}"
-    )
-
-
-# топ
-@dp.message(lambda m: m.text == "📊 Топ")
-async def top(message: types.Message):
-
-    ranking = sorted(
-        players.items(),
-        key=lambda x: calculate_power(x[1]),
-        reverse=True
-    )[:10]
-
-    text = "🏆 Топ игроков\n\n"
-
-    i = 1
-
-    for uid,data in ranking:
-
-        power = calculate_power(data)
-
-        text += f"{i}. ⚡ {power} | 💰 {data['coins']}\n"
-
-        i += 1
-
-    await message.answer(text)
-
-
-async def main():
-
-    await dp.start_polling(bot)
-
-asyncio.run(main())
+}
